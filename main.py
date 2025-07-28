@@ -3,15 +3,33 @@ import os
 import queue
 import tempfile
 import threading
+import logging
 
 from faster_whisper import WhisperModel
 import numpy as np
 from scipy.io.wavfile import write
 import sounddevice as sd
 
+# ==== ログ設定 ====
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# ==== モデル設定 ====
-model = WhisperModel("deepdml/faster-whisper-large-v3-turbo-ct2", device="cuda", compute_type="float16")
+# ==== モデル選択 ====
+MODEL_LIST = {
+    "1": "tiny",
+    "2": "small",
+    "3": "medium",
+    "4": "large-v2",
+    "5": "large-v3",
+    "6": "deepdml/faster-whisper-large-v3-turbo-ct2",
+}
+
+print("モデル選択：")
+for k, v in MODEL_LIST.items():
+    print(f"{k}: {v}")
+model_key = input("番号を入力してください: ").strip()
+model_name = MODEL_LIST.get(model_key, "tiny")
+logging.info(f"モデル: {model_name} を使用")
+model = WhisperModel(model_name, device="cuda", compute_type="float16")
 
 # ==== 音声設定 ====
 SAMPLERATE = 16000
@@ -41,13 +59,12 @@ def is_silent(chunk):
 def has_started_speaking(chunk):
     global last_rms
     rms = np.sqrt(np.mean(chunk.astype(np.float32) ** 2))
-#    print(f"📊 RMS={rms:.2f}")
     triggered = rms > SPEECH_START_THRESHOLD and last_rms < SPEECH_START_THRESHOLD
     last_rms = rms
     return triggered
 
 def process_audio(chunks):
-    print("🔁 認識中...")
+    logging.info("🔁 認識中...")
     audio_np = np.concatenate(chunks, axis=0)
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         write(tmp.name, SAMPLERATE, audio_np)
@@ -63,7 +80,7 @@ def process_audio(chunks):
 def record_stream():
     def callback(indata, frames, time_info, status):
         if status:
-            print(f"[!] Status: {status}")
+            logging.warning(f"[!] Status: {status}")
         record_queue.put(indata.copy())
 
     with sd.InputStream(callback=callback, samplerate=SAMPLERATE,
@@ -80,7 +97,7 @@ async def main_loop():
         chunk = await asyncio.to_thread(record_queue.get)
 
         if has_started_speaking(chunk) and not speaking:
-            print("🎤 話し始めを検出")
+            logging.info("🎤 話し始めを検出")
             speaking = True
             buffer = [chunk]
             silence_chunks = 0
@@ -89,7 +106,7 @@ async def main_loop():
             if is_silent(chunk):
                 silence_chunks += 1
                 if silence_chunks >= MAX_SILENCE_CHUNKS:
-                    print("🛑 話し終わり → 文字起こし")
+                    logging.info("🛑 話し終わり → 文字起こし")
                     await asyncio.to_thread(process_audio, buffer)
                     speaking = False
                     buffer = []
